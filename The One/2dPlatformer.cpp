@@ -14,20 +14,20 @@ enum GameState {
 
 GameState gameState = STATE_START;
 
-// Player (WORLD coordinates)
+// ================= PLAYER =================
 float playerX = 100;
 float playerY = 300;
 float velY = 0;
 
-// Camera
+// ================= CAMERA =================
 float cameraX = 0;
 
-// Input
+// ================= INPUT =================
 bool leftKey = false;
 bool rightKey = false;
 bool onGround = false;
 
-// Constants
+// ================= CONSTANTS =================
 const int SCREEN_W = 800;
 const int SCREEN_H = 600;
 
@@ -42,7 +42,6 @@ const float MOVE_SPEED = 5.0f;
 const float JUMP_FORCE = -15.0f;
 
 // ================= LEVEL DATA =================
-// Ground segments (with pits between them)
 struct Ground {
     int x1;
     int x2;
@@ -57,7 +56,24 @@ Ground groundSegments[] = {
 
 const int GROUND_COUNT = sizeof(groundSegments) / sizeof(Ground);
 
-// =============================================
+// ================= ENEMIES =================
+struct Enemy {
+    float x;
+    float y;
+    float speed;
+    int dir;
+};
+
+Enemy enemies[] = {
+    {350, 350, 2.0f, 1},
+    {800, 350, 2.5f, -1},
+    {1300, 350, 2.0f, 1},
+    {1800, 350, 2.5f, -1}
+};
+
+const int ENEMY_COUNT = sizeof(enemies) / sizeof(Enemy);
+
+// ===========================================
 
 void resetGame() {
     playerX = 100;
@@ -82,15 +98,13 @@ void updateGame() {
     if (gameState != STATE_PLAYING)
         return;
 
-    // Horizontal movement
+    // ================= PLAYER =================
     if (leftKey)  playerX -= MOVE_SPEED;
     if (rightKey) playerX += MOVE_SPEED;
 
-    // Gravity
     velY += GRAVITY;
     playerY += velY;
 
-    // Ground collision check
     if (isOnGround(playerX, playerY)) {
         playerY = GROUND_Y - PLAYER_H;
         velY = 0;
@@ -100,18 +114,48 @@ void updateGame() {
         onGround = false;
     }
 
-    // Fell into pit (death)
     if (playerY > SCREEN_H + 200) {
         gameState = STATE_DEAD;
     }
 
-    // Camera follows player
     cameraX = playerX - SCREEN_W / 2;
     if (cameraX < 0) cameraX = 0;
 
-    // Finish
     if (playerX >= LEVEL_END_X) {
         gameState = STATE_FINISH;
+    }
+
+    // ================= ENEMIES =================
+    for (int i = 0; i < ENEMY_COUNT; i++) {
+
+        enemies[i].x += enemies[i].speed * enemies[i].dir;
+
+        // Edge detection
+        if (!isOnGround(enemies[i].x + enemies[i].dir * 20, enemies[i].y)) {
+            enemies[i].dir *= -1;
+        }
+
+        enemies[i].y = GROUND_Y - PLAYER_H;
+
+        // Player collision
+        RECT p = {
+            (LONG)playerX,
+            (LONG)playerY,
+            (LONG)(playerX + PLAYER_W),
+            (LONG)(playerY + PLAYER_H)
+        };
+
+        RECT e = {
+            (LONG)enemies[i].x,
+            (LONG)enemies[i].y,
+            (LONG)(enemies[i].x + PLAYER_W),
+            (LONG)(enemies[i].y + PLAYER_H)
+        };
+
+        RECT out;
+        if (IntersectRect(&out, &p, &e)) {
+            gameState = STATE_DEAD;
+        }
     }
 }
 
@@ -121,7 +165,7 @@ void drawText(HDC hdc, int x, int y, const std::wstring& text) {
 
 void drawGame(HDC hdc) {
 
-    // Draw ground segments
+    // ================= GROUND =================
     for (int i = 0; i < GROUND_COUNT; i++) {
         Rectangle(
             hdc,
@@ -132,7 +176,7 @@ void drawGame(HDC hdc) {
         );
     }
 
-    // Finish line
+    // ================= FINISH =================
     Rectangle(
         hdc,
         LEVEL_END_X - cameraX,
@@ -141,7 +185,7 @@ void drawGame(HDC hdc) {
         GROUND_Y
     );
 
-    // Player
+    // ================= PLAYER =================
     Rectangle(
         hdc,
         playerX - cameraX,
@@ -149,6 +193,22 @@ void drawGame(HDC hdc) {
         playerX - cameraX + PLAYER_W,
         playerY + PLAYER_H
     );
+
+    // ================= ENEMIES =================
+    HBRUSH enemyBrush = CreateSolidBrush(RGB(200, 60, 60));
+    SelectObject(hdc, enemyBrush);
+
+    for (int i = 0; i < ENEMY_COUNT; i++) {
+        Rectangle(
+            hdc,
+            enemies[i].x - cameraX,
+            enemies[i].y,
+            enemies[i].x - cameraX + PLAYER_W,
+            enemies[i].y + PLAYER_H
+        );
+    }
+
+    DeleteObject(enemyBrush);
 
     // ================= HUD =================
     std::wstringstream ss;
@@ -172,11 +232,12 @@ void drawGame(HDC hdc) {
         drawText(hdc, 280, 230, L"PRESS R TO RESTART");
     }
     else if (gameState == STATE_DEAD) {
-        drawText(hdc, 330, 200, L"YOU FELL!");
+        drawText(hdc, 330, 200, L"YOU DIED!");
         drawText(hdc, 280, 230, L"PRESS R TO RETRY");
     }
 }
 
+// ================= WINDOW =================
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
 
@@ -247,6 +308,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     return 0;
 }
 
+// ================= ENTRY =================
 int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int nCmdShow) {
     WNDCLASS wc = {};
     wc.lpfnWndProc = WndProc;
@@ -258,7 +320,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int nCmdShow) {
 
     HWND hwnd = CreateWindow(
         L"PitsPlatformer",
-        L"2D Platformer - Pits + HUD",
+        L"2D Platformer - Enemies Added",
         WS_OVERLAPPEDWINDOW,
         100, 100, SCREEN_W, SCREEN_H,
         NULL, NULL, hInst, NULL
