@@ -3,6 +3,7 @@
 #include <cmath>
 #include <string>
 #include <sstream>
+#include <chrono>
 
 #pragma comment(lib, "user32.lib")
 #pragma comment(lib, "gdi32.lib")
@@ -60,7 +61,6 @@ double angleZ = 0.0;
 
 // Camera
 double cameraDistance = 4.0;
-Vec3 cameraPosition = Vec3(0, 0, 5);
 
 // Shapes
 std::vector<Shape> shapes;
@@ -73,6 +73,18 @@ double rotationSpeed = 0.02;
 // UI
 bool showHelp = true;
 HFONT hFont;
+
+// FPS Counter
+double fps = 0.0;
+int frameCount = 0;
+auto lastFpsUpdate = std::chrono::high_resolution_clock::now();
+auto lastFrameTime = std::chrono::high_resolution_clock::now();
+
+// Double Buffering
+HDC hdcBuffer = NULL;
+HBITMAP hBitmap = NULL;
+HBITMAP hOldBitmap = NULL;
+RECT clientRect;
 
 // ==================== SHAPE CREATION ====================
 void CreateShapes() {
@@ -153,6 +165,33 @@ POINT Project3DTo2D(const Vec3& point) {
     return { 0, 0 };
 }
 
+// ==================== DOUBLE BUFFERING ====================
+void InitDoubleBuffer(HWND hwnd) {
+    HDC hdc = GetDC(hwnd);
+    GetClientRect(hwnd, &clientRect);
+
+    if (hdcBuffer) {
+        SelectObject(hdcBuffer, hOldBitmap);
+        DeleteObject(hBitmap);
+        DeleteDC(hdcBuffer);
+    }
+
+    hdcBuffer = CreateCompatibleDC(hdc);
+    hBitmap = CreateCompatibleBitmap(hdc, clientRect.right, clientRect.bottom);
+    hOldBitmap = (HBITMAP)SelectObject(hdcBuffer, hBitmap);
+
+    ReleaseDC(hwnd, hdc);
+}
+
+void CleanupDoubleBuffer() {
+    if (hdcBuffer) {
+        SelectObject(hdcBuffer, hOldBitmap);
+        DeleteObject(hBitmap);
+        DeleteDC(hdcBuffer);
+        hdcBuffer = NULL;
+    }
+}
+
 // ==================== DRAWING FUNCTIONS ====================
 void DrawShape(HDC hdc, const Shape& shape) {
     // Transform vertices
@@ -177,7 +216,7 @@ void DrawShape(HDC hdc, const Shape& shape) {
 
     // Draw edges
     for (const auto& edge : shape.edges) {
-        if (edge.first < points2D.size() && edge.second < points2D.size()) {
+        if (edge.first < (int)points2D.size() && edge.second < (int)points2D.size()) {
             MoveToEx(hdc, points2D[edge.first].x, points2D[edge.first].y, NULL);
             LineTo(hdc, points2D[edge.second].x, points2D[edge.second].y);
         }
@@ -206,12 +245,24 @@ void DrawTextInfo(HDC hdc) {
     SetTextColor(hdc, RGB(255, 255, 255));
     SetBkColor(hdc, RGB(0, 0, 0));
 
-    // Draw shape info
+    // Update FPS
+    frameCount++;
+    auto now = std::chrono::high_resolution_clock::now();
+    auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - lastFpsUpdate).count();
+
+    if (elapsed >= 1000) { // Update FPS every second
+        fps = frameCount * 1000.0 / elapsed;
+        frameCount = 0;
+        lastFpsUpdate = now;
+    }
+
+    // Draw shape info with FPS
     std::stringstream ss;
     ss << "Shape: " << shapes[currentShape].name;
     ss << "  |  X: " << (int)(angleX * 180 / 3.14159) << "°";
     ss << "  Y: " << (int)(angleY * 180 / 3.14159) << "°";
     ss << "  Z: " << (int)(angleZ * 180 / 3.14159) << "°";
+    ss << "  |  FPS: " << (int)fps;
     ss << "  |  Auto: " << (autoRotate ? "ON" : "OFF");
 
     TextOutA(hdc, 10, 10, ss.str().c_str(), ss.str().length());
@@ -246,14 +297,21 @@ void DrawTextInfo(HDC hdc) {
 LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
     switch (uMsg) {
     case WM_CREATE: {
-        // Create font for text - FIXED: Use wide string
+        // Create font for text
         hFont = CreateFont(18, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
             DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
             DEFAULT_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Arial");
         CreateShapes();
+        InitDoubleBuffer(hwnd);
 
         // Set timer for animation (60 FPS)
         SetTimer(hwnd, 1, 16, NULL);
+        return 0;
+    }
+
+    case WM_SIZE: {
+        // Recreate buffer when window is resized
+        InitDoubleBuffer(hwnd);
         return 0;
     }
 
@@ -261,47 +319,61 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
         PAINTSTRUCT ps;
         HDC hdc = BeginPaint(hwnd, &ps);
 
-        // Fill background
-        RECT rc;
-        GetClientRect(hwnd, &rc);
-        HBRUSH hBrush = CreateSolidBrush(RGB(20, 20, 40));
-        FillRect(hdc, &rc, hBrush);
-        DeleteObject(hBrush);
+        if (hdcBuffer) {
+            // Get client area
+            GetClientRect(hwnd, &clientRect);
 
-        // Draw current shape
-        if (!shapes.empty()) {
-            DrawShape(hdc, shapes[currentShape]);
+            // Fill background on buffer
+            HBRUSH hBrush = CreateSolidBrush(RGB(20, 20, 40));
+            FillRect(hdcBuffer, &clientRect, hBrush);
+            DeleteObject(hBrush);
+
+            // Draw current shape on buffer
+            if (!shapes.empty()) {
+                DrawShape(hdcBuffer, shapes[currentShape]);
+            }
+
+            // Draw text info on buffer
+            DrawTextInfo(hdcBuffer);
+
+            // Copy buffer to screen
+            BitBlt(hdc, 0, 0, clientRect.right, clientRect.bottom,
+                hdcBuffer, 0, 0, SRCCOPY);
         }
-
-        // Draw text info
-        DrawTextInfo(hdc);
 
         EndPaint(hwnd, &ps);
         return 0;
     }
 
     case WM_TIMER: {
-        // Update rotation
+        // Calculate delta time for smooth animation
+        auto now = std::chrono::high_resolution_clock::now();
+        double deltaTime = std::chrono::duration<double>(now - lastFrameTime).count();
+        lastFrameTime = now;
+
+        // Update rotation with delta time
         if (autoRotate) {
-            angleY += rotationSpeed;
-            angleX += rotationSpeed * 0.5;
+            angleY += rotationSpeed * deltaTime * 60.0; // Normalize to 60 FPS
+            angleX += rotationSpeed * 0.5 * deltaTime * 60.0;
         }
 
         // Redraw window
-        InvalidateRect(hwnd, NULL, TRUE);
-        UpdateWindow(hwnd);
+        InvalidateRect(hwnd, NULL, FALSE); // FALSE prevents background erase
         return 0;
     }
 
     case WM_KEYDOWN: {
+        auto now = std::chrono::high_resolution_clock::now();
+        double deltaTime = std::chrono::duration<double>(now - lastFrameTime).count();
+
         switch (wParam) {
-            // Rotation controls
-        case 'A': angleY -= 0.1; break;
-        case 'D': angleY += 0.1; break;
-        case 'W': angleX += 0.1; break;
-        case 'S': angleX -= 0.1; break;
-        case 'Q': angleZ += 0.1; break;
-        case 'E': angleZ -= 0.1; break;
+            // Rotation controls with delta time
+        case 'A': angleY -= 0.1 * deltaTime * 60.0; break;
+        case 'D': angleY += 0.1 * deltaTime * 60.0; break;
+        case 'W': angleX += 0.1 * deltaTime * 60.0; break;
+        case 'S': angleX -= 0.1 * deltaTime * 60.0; break;
+        case 'Q': angleZ += 0.1 * deltaTime * 60.0; break;
+        case 'E': angleZ -= 0.1 * deltaTime * 60.0; break;
 
             // Shape selection
         case 'N':
@@ -335,12 +407,19 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
             break;
         }
 
-        InvalidateRect(hwnd, NULL, TRUE);
+        lastFrameTime = now;
+        InvalidateRect(hwnd, NULL, FALSE);
         return 0;
+    }
+
+    case WM_ERASEBKGND: {
+        // Prevent background erase to reduce flicker
+        return 1;
     }
 
     case WM_DESTROY: {
         KillTimer(hwnd, 1);
+        CleanupDoubleBuffer();
         DeleteObject(hFont);
         PostQuitMessage(0);
         return 0;
@@ -353,21 +432,26 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
 
 // ==================== MAIN ENTRY POINT ====================
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow) {
-    // Register window class - FIXED: Use wide strings
+    // Initialize FPS timer
+    lastFpsUpdate = std::chrono::high_resolution_clock::now();
+    lastFrameTime = std::chrono::high_resolution_clock::now();
+
+    // Register window class
     WNDCLASS wc = {};
     wc.lpfnWndProc = WindowProc;
     wc.hInstance = hInstance;
     wc.lpszClassName = L"3DShapeRotator";
     wc.hCursor = LoadCursor(NULL, IDC_ARROW);
-    wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
+    wc.hbrBackground = NULL; // No background brush to prevent flicker
+    wc.style = CS_HREDRAW | CS_VREDRAW; // Redraw on resize
 
     RegisterClass(&wc);
 
-    // Create window - FIXED: Use wide strings
+    // Create window
     HWND hwnd = CreateWindowEx(
         0,
         L"3DShapeRotator",
-        L"3D Shape Rotator - GDI Version",
+        L"3D Shape Rotator - FPS: 0",
         WS_OVERLAPPEDWINDOW,
         CW_USEDEFAULT, CW_USEDEFAULT,
         WINDOW_WIDTH, WINDOW_HEIGHT,
