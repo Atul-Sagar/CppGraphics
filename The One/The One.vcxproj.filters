@@ -15,7 +15,7 @@
     </Filter>
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="ASCII Platformer.cpp">
+    <ClCompile Include="2dColor.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>
