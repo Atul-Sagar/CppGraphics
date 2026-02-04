@@ -15,7 +15,7 @@
     </Filter>
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="Shapes.cpp">
+    <ClCompile Include="Minecraft.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>
