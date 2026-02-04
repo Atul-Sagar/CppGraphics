@@ -11,11 +11,15 @@
 #undef min
 #undef max
 
+// Include WinUser.h for mouse macros (though Windows.h should include it)
+#include <winuser.h>
+
 #pragma comment(lib, "user32.lib")
 #pragma comment(lib, "gdi32.lib")
 
 // ==================== BLOCK TYPES ====================
-enum BlockType {
+// Changed to enum class to fix warning
+enum class BlockType {
     BLOCK_AIR = 0,
     BLOCK_GRASS,
     BLOCK_DIRT,
@@ -30,7 +34,7 @@ enum BlockType {
 };
 
 // Block colors (RGB)
-COLORREF BlockColors[BLOCK_COUNT] = {
+COLORREF BlockColors[static_cast<int>(BlockType::BLOCK_COUNT)] = {
     RGB(135, 206, 235),    // Air/Sky
     RGB(95, 189, 87),      // Grass
     RGB(139, 69, 19),      // Dirt
@@ -43,7 +47,7 @@ COLORREF BlockColors[BLOCK_COUNT] = {
     RGB(178, 34, 34)       // Brick
 };
 
-const char* BlockNames[BLOCK_COUNT] = {
+const char* BlockNames[static_cast<int>(BlockType::BLOCK_COUNT)] = {
     "Air", "Grass", "Dirt", "Stone", "Wood",
     "Leaves", "Water", "Sand", "Glass", "Brick"
 };
@@ -82,10 +86,53 @@ BlockType world[WORLD_WIDTH][WORLD_HEIGHT][WORLD_DEPTH];
 Camera camera;
 bool wireframeMode = false;
 bool fogEnabled = true;
-int selectedBlock = BLOCK_GRASS;
+int selectedBlock = static_cast<int>(BlockType::BLOCK_GRASS);
 bool showGrid = true;
 bool dayNightCycle = true;
 float timeOfDay = 12.0f; // 0-24 hours
+
+// ==================== MOUSE LOOK ====================
+bool mouseLookEnabled = false;
+POINT mouseCenter;
+int mouseSensitivity = 2;
+
+// ==================== FPS COUNTER ====================
+class FPSCounter {
+private:
+    int frameCount;
+    float timePassed;
+    float fps;
+    LARGE_INTEGER frequency;
+    LARGE_INTEGER lastTime;
+
+public:
+    FPSCounter() : frameCount(0), timePassed(0.0f), fps(0.0f) {
+        QueryPerformanceFrequency(&frequency);
+        QueryPerformanceCounter(&lastTime);
+    }
+
+    void Update() {
+        frameCount++;
+
+        LARGE_INTEGER currentTime;
+        QueryPerformanceCounter(&currentTime);
+
+        float deltaTime = static_cast<float>(currentTime.QuadPart - lastTime.QuadPart) / static_cast<float>(frequency.QuadPart);
+        timePassed += deltaTime;
+
+        if (timePassed >= 0.5f) { // Update FPS every 0.5 seconds
+            fps = static_cast<float>(frameCount) / timePassed;
+            frameCount = 0;
+            timePassed = 0.0f;
+        }
+
+        lastTime = currentTime;
+    }
+
+    float GetFPS() const { return fps; }
+};
+
+FPSCounter fpsCounter;
 
 // ==================== DOUBLE BUFFERING ====================
 HDC hBufferDC = NULL;
@@ -126,6 +173,14 @@ struct Face {
     float depth;
     bool isTop;
 
+    // Initialize members to fix warnings
+    Face() : color(0), depth(0.0f), isTop(false) {
+        corners[0] = Vec3();
+        corners[1] = Vec3();
+        corners[2] = Vec3();
+        corners[3] = Vec3();
+    }
+
     bool operator<(const Face& other) const {
         return depth > other.depth; // Sort back to front
     }
@@ -139,7 +194,7 @@ void GenerateWorld() {
     for (int x = 0; x < WORLD_WIDTH; x++) {
         for (int y = 0; y < WORLD_HEIGHT; y++) {
             for (int z = 0; z < WORLD_DEPTH; z++) {
-                world[x][y][z] = BLOCK_AIR;
+                world[x][y][z] = BlockType::BLOCK_AIR;
             }
         }
     }
@@ -151,21 +206,21 @@ void GenerateWorld() {
             int groundHeight = 3;
 
             // Bedrock at bottom
-            world[x][0][z] = BLOCK_STONE;
+            world[x][0][z] = BlockType::BLOCK_STONE;
 
             // Dirt layer
             for (int y = 1; y < groundHeight; y++) {
-                world[x][y][z] = BLOCK_DIRT;
+                world[x][y][z] = BlockType::BLOCK_DIRT;
             }
 
             // Grass on top
-            world[x][groundHeight][z] = BLOCK_GRASS;
+            world[x][groundHeight][z] = BlockType::BLOCK_GRASS;
 
             // Add some trees
             if (rand() % 10 == 0 && x > 1 && x < WORLD_WIDTH - 2 && z > 1 && z < WORLD_DEPTH - 2) {
                 // Tree trunk
                 for (int y = groundHeight + 1; y <= groundHeight + 4 && y < WORLD_HEIGHT; y++) {
-                    world[x][y][z] = BLOCK_WOOD;
+                    world[x][y][z] = BlockType::BLOCK_WOOD;
                 }
 
                 // Tree leaves (simple cube)
@@ -181,7 +236,7 @@ void GenerateWorld() {
                                 ly >= 0 && ly < WORLD_HEIGHT) {
                                 // Don't replace trunk
                                 if (!(dx == 0 && dz == 0 && dy == 0)) {
-                                    world[lx][ly][lz] = BLOCK_LEAVES;
+                                    world[lx][ly][lz] = BlockType::BLOCK_LEAVES;
                                 }
                             }
                         }
@@ -201,7 +256,7 @@ void GenerateWorld() {
         for (int dz = -1; dz <= 1; dz++) {
             if (houseX + dx >= 0 && houseX + dx < WORLD_WIDTH &&
                 houseZ + dz >= 0 && houseZ + dz < WORLD_DEPTH) {
-                world[houseX + dx][groundY][houseZ + dz] = BLOCK_BRICK;
+                world[houseX + dx][groundY][houseZ + dz] = BlockType::BLOCK_BRICK;
             }
         }
     }
@@ -215,10 +270,10 @@ void GenerateWorld() {
                         houseZ + dz >= 0 && houseZ + dz < WORLD_DEPTH) {
                         // Windows on middle row
                         if (y == groundY + 2 && (dx == 0 || dz == 0)) {
-                            world[houseX + dx][y][houseZ + dz] = BLOCK_GLASS;
+                            world[houseX + dx][y][houseZ + dz] = BlockType::BLOCK_GLASS;
                         }
                         else {
-                            world[houseX + dx][y][houseZ + dz] = BLOCK_BRICK;
+                            world[houseX + dx][y][houseZ + dz] = BlockType::BLOCK_BRICK;
                         }
                     }
                 }
@@ -228,7 +283,7 @@ void GenerateWorld() {
 
     // Roof
     if (groundY + 3 < WORLD_HEIGHT) {
-        world[houseX][groundY + 3][houseZ] = BLOCK_WOOD;
+        world[houseX][groundY + 3][houseZ] = BlockType::BLOCK_WOOD;
     }
 }
 
@@ -357,21 +412,22 @@ void DrawFace(HDC hdc, const Face& face) {
 }
 
 void CollectFaces(std::vector<Face>& faces, int x, int y, int z, BlockType type) {
-    if (type == BLOCK_AIR) return;
+    if (type == BlockType::BLOCK_AIR) return;
 
     float fx = static_cast<float>(x);
     float fy = static_cast<float>(y);
     float fz = static_cast<float>(z);
 
-    COLORREF color = BlockColors[type];
+    int typeIndex = static_cast<int>(type);
+    COLORREF color = BlockColors[typeIndex];
 
     // Check which faces are visible (adjacent to air)
-    bool topVisible = (y == WORLD_HEIGHT - 1) || world[x][y + 1][z] == BLOCK_AIR;
-    bool frontVisible = (z == WORLD_DEPTH - 1) || world[x][y][z + 1] == BLOCK_AIR;
-    bool rightVisible = (x == WORLD_WIDTH - 1) || world[x + 1][y][z] == BLOCK_AIR;
-    bool backVisible = (z == 0) || world[x][y][z - 1] == BLOCK_AIR;
-    bool leftVisible = (x == 0) || world[x - 1][y][z] == BLOCK_AIR;
-    bool bottomVisible = (y == 0) || world[x][y - 1][z] == BLOCK_AIR;
+    bool topVisible = (y == WORLD_HEIGHT - 1) || world[x][y + 1][z] == BlockType::BLOCK_AIR;
+    bool frontVisible = (z == WORLD_DEPTH - 1) || world[x][y][z + 1] == BlockType::BLOCK_AIR;
+    bool rightVisible = (x == WORLD_WIDTH - 1) || world[x + 1][y][z] == BlockType::BLOCK_AIR;
+    bool backVisible = (z == 0) || world[x][y][z - 1] == BlockType::BLOCK_AIR;
+    bool leftVisible = (x == 0) || world[x - 1][y][z] == BlockType::BLOCK_AIR;
+    bool bottomVisible = (y == 0) || world[x][y - 1][z] == BlockType::BLOCK_AIR;
 
     // Calculate depth for sorting (distance from camera to block center)
     float blockCenterX = fx + 0.5f;
@@ -448,6 +504,9 @@ void CollectFaces(std::vector<Face>& faces, int x, int y, int z, BlockType type)
 void RenderFrame() {
     if (!hBufferDC) return;
 
+    // Update FPS counter
+    fpsCounter.Update();
+
     // Calculate sky color based on time
     COLORREF skyColor;
     if (timeOfDay >= 6 && timeOfDay <= 18) {
@@ -494,16 +553,25 @@ void DrawUI(HDC hdc) {
 
     // Draw semi-transparent HUD background
     HBRUSH hHudBrush = CreateSolidBrush(RGB(0, 0, 0));
-    RECT hudRect = { 0, bufferHeight - 100, bufferWidth, bufferHeight };
+    RECT hudRect = { 0, bufferHeight - 120, bufferWidth, bufferHeight };
     FillRect(hdc, &hudRect, hHudBrush);
     DeleteObject(hHudBrush);
 
     SetTextColor(hdc, RGB(255, 255, 255));
 
+    // Draw FPS counter
+    char fpsBuffer[64];
+    sprintf_s(fpsBuffer, "FPS: %.1f", fpsCounter.GetFPS());
+    TextOutA(hdc, bufferWidth - 150, 20, fpsBuffer, static_cast<int>(strlen(fpsBuffer)));
+
+    // Draw mouse look status
+    const char* mouseStatus = mouseLookEnabled ? "Mouse Look: ON (Right Click)" : "Mouse Look: OFF";
+    TextOutA(hdc, bufferWidth - 150, 40, mouseStatus, static_cast<int>(strlen(mouseStatus)));
+
     // Draw selected block preview
     int blockSize = 40;
     int previewX = 20;
-    int previewY = bufferHeight - 80;
+    int previewY = bufferHeight - 100;
 
     RECT blockRect = { previewX, previewY, previewX + blockSize, previewY + blockSize };
     HBRUSH hBlockBrush = CreateSolidBrush(BlockColors[selectedBlock]);
@@ -532,13 +600,14 @@ void DrawUI(HDC hdc) {
 
     // Draw time
     sprintf_s(buffer, "Time: %02d:00", static_cast<int>(timeOfDay) % 24);
-    TextOutA(hdc, bufferWidth - 100, 20, buffer, static_cast<int>(strlen(buffer)));
+    TextOutA(hdc, bufferWidth - 100, 60, buffer, static_cast<int>(strlen(buffer)));
 
     // Draw controls
     const char* controls[] = {
         "CONTROLS:",
         "WASD - Move, QE - Up/Down",
         "Arrow Keys - Look around",
+        "Right Click - Toggle Mouse Look",
         "1-9 - Select Block",
         "G - Toggle Grid, F - Toggle Fog",
         "R - Wireframe, T - Day/Night",
@@ -546,7 +615,7 @@ void DrawUI(HDC hdc) {
         "ESC - Exit"
     };
 
-    for (int i = 0; i < 8; i++) {
+    for (int i = 0; i < 9; i++) {
         TextOutA(hdc, 20, 20 + i * 20, controls[i], static_cast<int>(strlen(controls[i])));
     }
 
@@ -554,6 +623,73 @@ void DrawUI(HDC hdc) {
     SetBkMode(hdc, oldBkMode);
     SelectObject(hdc, hOldFont);
     DeleteObject(hFont);
+}
+
+// ==================== MOUSE LOOK FUNCTIONS ====================
+void EnableMouseLook(HWND hwnd) {
+    mouseLookEnabled = true;
+
+    // Hide cursor
+    ShowCursor(FALSE);
+
+    // Get window center
+    RECT rc;
+    GetClientRect(hwnd, &rc);
+    mouseCenter.x = rc.left + (rc.right - rc.left) / 2;
+    mouseCenter.y = rc.top + (rc.bottom - rc.top) / 2;
+
+    // Set cursor to center
+    ClientToScreen(hwnd, &mouseCenter);
+    SetCursorPos(mouseCenter.x, mouseCenter.y);
+
+    // Capture mouse
+    SetCapture(hwnd);
+}
+
+void DisableMouseLook(HWND hwnd) {
+    mouseLookEnabled = false;
+
+    // Show cursor
+    ShowCursor(TRUE);
+
+    // Release mouse capture
+    ReleaseCapture();
+}
+
+void UpdateMouseLook(HWND hwnd, int mouseX, int mouseY) {
+    if (!mouseLookEnabled) return;
+
+    // Get window center
+    RECT rc;
+    GetClientRect(hwnd, &rc);
+    int centerX = rc.left + (rc.right - rc.left) / 2;
+    int centerY = rc.top + (rc.bottom - rc.top) / 2;
+
+    // Calculate mouse movement
+    int deltaX = mouseX - centerX;
+    int deltaY = mouseY - centerY;
+
+    // Update camera rotation
+    camera.yaw += deltaX * 0.1f * mouseSensitivity;
+    camera.pitch -= deltaY * 0.1f * mouseSensitivity;
+
+    // Clamp pitch
+    if (camera.pitch > 89.0f) camera.pitch = 89.0f;
+    if (camera.pitch < -89.0f) camera.pitch = -89.0f;
+
+    // Wrap yaw
+    if (camera.yaw > 360.0f) camera.yaw -= 360.0f;
+    if (camera.yaw < 0.0f) camera.yaw += 360.0f;
+
+    // Reset mouse to center
+    POINT center;
+    center.x = centerX;
+    center.y = centerY;
+    ClientToScreen(hwnd, &center);
+    SetCursorPos(center.x, center.y);
+
+    // Force redraw
+    InvalidateRect(hwnd, NULL, FALSE);
 }
 
 // ==================== WINDOW PROCEDURE ====================
@@ -629,15 +765,15 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
         case VK_UP: camera.pitch += 5.0f; break;
         case VK_DOWN: camera.pitch -= 5.0f; break;
 
-        case '1': selectedBlock = BLOCK_GRASS; break;
-        case '2': selectedBlock = BLOCK_DIRT; break;
-        case '3': selectedBlock = BLOCK_STONE; break;
-        case '4': selectedBlock = BLOCK_WOOD; break;
-        case '5': selectedBlock = BLOCK_LEAVES; break;
-        case '6': selectedBlock = BLOCK_WATER; break;
-        case '7': selectedBlock = BLOCK_SAND; break;
-        case '8': selectedBlock = BLOCK_GLASS; break;
-        case '9': selectedBlock = BLOCK_BRICK; break;
+        case '1': selectedBlock = static_cast<int>(BlockType::BLOCK_GRASS); break;
+        case '2': selectedBlock = static_cast<int>(BlockType::BLOCK_DIRT); break;
+        case '3': selectedBlock = static_cast<int>(BlockType::BLOCK_STONE); break;
+        case '4': selectedBlock = static_cast<int>(BlockType::BLOCK_WOOD); break;
+        case '5': selectedBlock = static_cast<int>(BlockType::BLOCK_LEAVES); break;
+        case '6': selectedBlock = static_cast<int>(BlockType::BLOCK_WATER); break;
+        case '7': selectedBlock = static_cast<int>(BlockType::BLOCK_SAND); break;
+        case '8': selectedBlock = static_cast<int>(BlockType::BLOCK_GLASS); break;
+        case '9': selectedBlock = static_cast<int>(BlockType::BLOCK_BRICK); break;
 
         case 'G': showGrid = !showGrid; break;
         case 'F': fogEnabled = !fogEnabled; break;
@@ -665,7 +801,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
             if (destroyX >= 0 && destroyX < WORLD_WIDTH &&
                 destroyY >= 0 && destroyY < WORLD_HEIGHT &&
                 destroyZ >= 0 && destroyZ < WORLD_DEPTH) {
-                world[destroyX][destroyY][destroyZ] = BLOCK_AIR;
+                world[destroyX][destroyY][destroyZ] = BlockType::BLOCK_AIR;
             }
             break;
         }
@@ -684,6 +820,51 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
         if (camera.yaw < 0.0f) camera.yaw += 360.0f;
 
         InvalidateRect(hwnd, NULL, FALSE);
+        return 0;
+    }
+
+    case WM_RBUTTONDOWN: {
+        // Toggle mouse look on right click
+        if (!mouseLookEnabled) {
+            EnableMouseLook(hwnd);
+        }
+        else {
+            DisableMouseLook(hwnd);
+        }
+        return 0;
+    }
+
+    case WM_MOUSEMOVE: {
+        // FIXED: Use LOWORD and HIWORD macros instead of GET_X_LPARAM/GET_Y_LPARAM
+        int x = LOWORD(lParam);  // Get X coordinate
+        int y = HIWORD(lParam);  // Get Y coordinate
+
+        if (mouseLookEnabled) {
+            UpdateMouseLook(hwnd, x, y);
+        }
+        return 0;
+    }
+
+    case WM_MOUSEWHEEL: {
+        // Use mouse wheel to change selected block
+        short delta = GET_WHEEL_DELTA_WPARAM(wParam);
+        if (delta > 0) {
+            // Scroll up - next block
+            selectedBlock = (selectedBlock + 1) % static_cast<int>(BlockType::BLOCK_COUNT);
+        }
+        else {
+            // Scroll down - previous block
+            selectedBlock = (selectedBlock - 1 + static_cast<int>(BlockType::BLOCK_COUNT)) % static_cast<int>(BlockType::BLOCK_COUNT);
+        }
+        InvalidateRect(hwnd, NULL, FALSE);
+        return 0;
+    }
+
+    case WM_KILLFOCUS: {
+        // Disable mouse look if window loses focus
+        if (mouseLookEnabled) {
+            DisableMouseLook(hwnd);
+        }
         return 0;
     }
 
@@ -710,7 +891,9 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     wc.hbrBackground = NULL;
     wc.style = CS_HREDRAW | CS_VREDRAW;
 
-    RegisterClassW(&wc);
+    if (!RegisterClassW(&wc)) {
+        return 0;
+    }
 
     HWND hwnd = CreateWindowExW(
         0,
